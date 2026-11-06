@@ -30,3 +30,4 @@ router.post('/chat', optionalAuth, chatAssistant);
 router.get('/insights', authenticate, requireStaff, getOperationalInsights);
 
 module.exports = router;
+

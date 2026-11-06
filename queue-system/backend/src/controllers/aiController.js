@@ -40,3 +40,4 @@ const getOperationalInsights = async (req, res, next) => {
 };
 
 module.exports = { chatAssistant, getOperationalInsights };
+
