@@ -15,7 +15,7 @@ const startServer = async () => {
     connectRedis(); // synchronous setup; errors surface via event emitter
 
     app.listen(PORT, () => {
-      console.log(`[Server] Queue System API running on port ${PORT}`);
+      console.log(`[Server] Quebee Smart Queue API running on port ${PORT}`);
       console.log(`[Server] Environment: ${process.env.NODE_ENV || 'development'}`);
     });
   } catch (err) {

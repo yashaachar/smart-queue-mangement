@@ -27,7 +27,7 @@ if (process.env.NODE_ENV !== 'test') {
 
 // ── Health check ──────────────────────────────────────────────────────────────
 app.get('/health', (req, res) => {
-  res.json({ success: true, message: 'Queue System API is running', timestamp: new Date().toISOString() });
+  res.json({ success: true, product: 'Quebee', message: 'Quebee Smart Queue API is running', timestamp: new Date().toISOString() });
 });
 
 // ── Routes ────────────────────────────────────────────────────────────────────

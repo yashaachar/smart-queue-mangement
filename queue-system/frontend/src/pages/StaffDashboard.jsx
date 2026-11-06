@@ -3,6 +3,22 @@ import { getQueueStatus, advanceQueue, resetQueue, toggleQueue, getAllTokens } f
 import Alert from '../components/Alert';
 import Spinner from '../components/Spinner';
 import TokenCard from '../components/TokenCard';
+import StatCard from '../components/common/StatCard';
+import Button from '../components/common/Button';
+import Modal from '../components/common/Modal';
+import Badge from '../components/common/Badge';
+import EmptyState from '../components/common/EmptyState';
+import {
+  Users,
+  PlayCircle,
+  PauseCircle,
+  RotateCcw,
+  CheckCircle2,
+  Ticket,
+  Filter,
+  Monitor,
+  AlertTriangle,
+} from 'lucide-react';
 
 export default function StaffDashboard() {
   const [queueStatus, setQueueStatus] = useState(null);
@@ -26,7 +42,7 @@ export default function StaffDashboard() {
       setTokens(tokensRes.data.data.tokens);
       setPagination(tokensRes.data.data.pagination);
     } catch (err) {
-      setError('Failed to load dashboard data.');
+      setError('Failed to load queue state from server.');
     } finally {
       setLoading(false);
     }
@@ -57,124 +73,168 @@ export default function StaffDashboard() {
     }
   };
 
-  const handleNext = () => handleAction(advanceQueue, 'next', 'Queue advanced');
-  const handleToggle = () => handleAction(toggleQueue, 'toggle', 'Queue toggled');
+  const handleNext = () => handleAction(advanceQueue, 'next', 'Queue advanced to next customer');
+  const handleToggle = () => handleAction(toggleQueue, 'toggle', 'Counter status updated');
   const handleReset = async () => {
     setShowResetConfirm(false);
-    handleAction(resetQueue, 'reset', 'Queue reset successfully');
+    handleAction(resetQueue, 'reset', 'Session reset successfully');
   };
 
   if (loading) {
     return (
       <div className="page-center">
-        <Spinner size="lg" />
+        <Spinner size="lg" label="Loading staff terminal..." />
       </div>
     );
   }
 
   return (
     <div className="staff-dashboard">
-      <h1 className="page-title">Staff Dashboard</h1>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.75rem', flexWrap: 'wrap', gap: '1rem' }}>
+        <div>
+          <h1 className="page-title">Staff Operations Terminal</h1>
+          <p className="page-subtitle">
+            Counter 01 · Service Desk Dispatcher
+          </p>
+        </div>
+        {queueStatus && (
+          <Badge variant={queueStatus.isOpen ? 'success' : 'danger'} dot>
+            {queueStatus.isOpen ? 'Counter Active' : 'Counter Suspended'}
+          </Badge>
+        )}
+      </div>
 
       <Alert type="success" message={success} onDismiss={() => setSuccess('')} />
       <Alert type="error" message={error} onDismiss={() => setError('')} />
 
-      {/* ── Queue Status Panel ── */}
+      {/* ── Status Metrics Grid ── */}
       {queueStatus && (
-        <div className="status-panel">
-          <div className={`status-indicator ${queueStatus.isOpen ? 'open' : 'closed'}`}>
-            {queueStatus.isOpen ? '🟢 Open' : '🔴 Closed'}
-          </div>
-          <div className="status-stats">
-            <div className="stat-box">
-              <span className="stat-val">{queueStatus.currentServing || '—'}</span>
-              <span className="stat-lbl">Now Serving</span>
-            </div>
-            <div className="stat-box">
-              <span className="stat-val">{queueStatus.waitingCount}</span>
-              <span className="stat-lbl">Waiting</span>
-            </div>
-            <div className="stat-box">
-              <span className="stat-val">{queueStatus.servedCount}</span>
-              <span className="stat-lbl">Served</span>
-            </div>
-            <div className="stat-box">
-              <span className="stat-val">{queueStatus.totalIssued}</span>
-              <span className="stat-lbl">Total Issued</span>
-            </div>
-          </div>
+        <div className="stats-grid">
+          <StatCard
+            label="Now Serving"
+            value={queueStatus.currentServing > 0 ? `#${queueStatus.currentServing}` : '—'}
+            icon={Monitor}
+            helper="Current at desk"
+          />
+          <StatCard
+            label="In Waiting Line"
+            value={queueStatus.waitingCount}
+            icon={Users}
+            helper="Pending service"
+          />
+          <StatCard
+            label="Served Today"
+            value={queueStatus.servedCount}
+            icon={CheckCircle2}
+            helper="Completed tokens"
+          />
+          <StatCard
+            label="Total Tokens"
+            value={queueStatus.totalIssued}
+            icon={Ticket}
+            helper="Issued this session"
+          />
         </div>
       )}
 
-      {/* ── Action Buttons ── */}
+      {/* ── Queue Control Action Buttons ── */}
       <div className="action-buttons">
-        <button
-          className="btn btn-success btn-lg"
+        <Button
+          variant="success"
+          size="lg"
           onClick={handleNext}
+          loading={actionLoading === 'next'}
           disabled={!!actionLoading || !queueStatus?.isOpen || queueStatus?.waitingCount === 0}
+          icon={PlayCircle}
         >
-          {actionLoading === 'next' ? <Spinner size="sm" /> : '▶ Call Next Token'}
-        </button>
+          Call Next Customer
+        </Button>
 
-        <button
-          className={`btn btn-lg ${queueStatus?.isOpen ? 'btn-warning' : 'btn-primary'}`}
+        <Button
+          variant={queueStatus?.isOpen ? 'warning' : 'primary'}
+          size="lg"
           onClick={handleToggle}
+          loading={actionLoading === 'toggle'}
           disabled={!!actionLoading}
+          icon={queueStatus?.isOpen ? PauseCircle : PlayCircle}
         >
-          {actionLoading === 'toggle'
-            ? <Spinner size="sm" />
-            : queueStatus?.isOpen ? '⏸ Close Counter' : '▶ Open Counter'}
-        </button>
+          {queueStatus?.isOpen ? 'Suspend Counter' : 'Open Counter'}
+        </Button>
 
-        <button
-          className="btn btn-danger btn-lg"
+        <Button
+          variant="outline"
+          size="lg"
           onClick={() => setShowResetConfirm(true)}
           disabled={!!actionLoading}
+          icon={RotateCcw}
         >
-          🔄 Reset Queue
-        </button>
+          Reset Session
+        </Button>
       </div>
 
       {/* ── Reset Confirmation Modal ── */}
-      {showResetConfirm && (
-        <div className="modal-overlay" role="dialog" aria-modal="true">
-          <div className="modal">
-            <h2>⚠️ Reset Queue?</h2>
-            <p>This will delete all tokens and reset the counter to zero. This cannot be undone.</p>
-            <div className="modal-actions">
-              <button className="btn btn-danger" onClick={handleReset}>
-                Yes, Reset
-              </button>
-              <button className="btn btn-outline" onClick={() => setShowResetConfirm(false)}>
-                Cancel
-              </button>
-            </div>
-          </div>
+      <Modal
+        isOpen={showResetConfirm}
+        onClose={() => setShowResetConfirm(false)}
+        title="Reset Queue Session?"
+        actions={
+          <>
+            <Button variant="secondary" onClick={() => setShowResetConfirm(false)}>
+              Cancel
+            </Button>
+            <Button variant="danger" onClick={handleReset}>
+              Yes, Reset Session
+            </Button>
+          </>
+        }
+      >
+        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'flex-start' }}>
+          <AlertTriangle size={24} color="var(--danger)" style={{ flexShrink: 0, marginTop: '0.15rem' }} />
+          <p className="modal-desc" style={{ margin: 0 }}>
+            This will archive or clear the active waiting queue and reset the sequence counter back to zero.
+            Please ensure all serving customers are completed before starting a new session.
+          </p>
         </div>
-      )}
+      </Modal>
 
-      {/* ── Token List ── */}
+      {/* ── Token Management & Filter ── */}
       <div className="token-list-section">
         <div className="token-list-header">
-          <h2>All Tokens</h2>
-          <div className="filter-group">
-            <label htmlFor="status-filter">Filter:</label>
+          <div>
+            <h2 style={{ fontSize: '1.2rem', fontWeight: 700 }}>Queue Token Roster</h2>
+            <p style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+              Live customer tokens ordered by issue time
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+            <Filter size={15} color="var(--text-muted)" />
+            <label htmlFor="status-filter" style={{ fontSize: '0.85rem', fontWeight: 500, color: 'var(--text-muted)' }}>
+              Filter:
+            </label>
             <select
               id="status-filter"
               value={statusFilter}
-              onChange={(e) => { setStatusFilter(e.target.value); setCurrentPage(1); }}
-              className="form-input form-input-sm"
+              onChange={(e) => {
+                setStatusFilter(e.target.value);
+                setCurrentPage(1);
+              }}
+              className="form-select"
+              style={{ width: 'auto', padding: '0.35rem 0.75rem', fontSize: '0.85rem' }}
             >
-              <option value="">All</option>
-              <option value="waiting">Waiting</option>
-              <option value="serving">Serving</option>
-              <option value="served">Served</option>
+              <option value="">All Statuses</option>
+              <option value="waiting">Waiting Only</option>
+              <option value="serving">Serving Only</option>
+              <option value="served">Completed Only</option>
             </select>
           </div>
         </div>
 
         {tokens.length === 0 ? (
-          <p className="empty-list">No tokens found.</p>
+          <EmptyState
+            title="No tokens found"
+            description={statusFilter ? `No tokens match filter "${statusFilter}"` : 'No tokens have been issued in this queue session yet.'}
+          />
         ) : (
           <div className="token-grid">
             {tokens.map((token) => (
@@ -183,26 +243,28 @@ export default function StaffDashboard() {
           </div>
         )}
 
-        {/* Pagination */}
+        {/* Pagination Controls */}
         {pagination && pagination.pages > 1 && (
           <div className="pagination">
-            <button
-              className="btn btn-outline btn-sm"
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
               disabled={currentPage === 1}
             >
-              ← Prev
-            </button>
+              ← Previous
+            </Button>
             <span className="page-info">
-              Page {currentPage} of {pagination.pages}
+              Page {currentPage} of {pagination.pages} ({pagination.total} total)
             </span>
-            <button
-              className="btn btn-outline btn-sm"
+            <Button
+              variant="outline"
+              size="sm"
               onClick={() => setCurrentPage((p) => Math.min(pagination.pages, p + 1))}
               disabled={currentPage === pagination.pages}
             >
               Next →
-            </button>
+            </Button>
           </div>
         )}
       </div>

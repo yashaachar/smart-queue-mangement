@@ -3,7 +3,9 @@ import { Link, useNavigate } from 'react-router-dom';
 import { registerUser } from '../api/auth';
 import { useAuth } from '../context/AuthContext';
 import Alert from '../components/Alert';
-import Spinner from '../components/Spinner';
+import Button from '../components/common/Button';
+import BrandLogo from '../components/common/BrandLogo';
+import { UserPlus } from 'lucide-react';
 
 export default function RegisterPage() {
   const { login } = useAuth();
@@ -38,7 +40,7 @@ export default function RegisterPage() {
       if (data?.errors) {
         setFieldErrors(data.errors);
       } else {
-        setError(data?.message || 'Registration failed. Please try again.');
+        setError(data?.message || 'Registration failed. Please verify your details.');
       }
     } finally {
       setLoading(false);
@@ -51,21 +53,26 @@ export default function RegisterPage() {
   return (
     <div className="auth-page">
       <div className="auth-card">
-        <h1 className="auth-title">Create Account</h1>
-        <p className="auth-subtitle">Join the Queue System</p>
+        <div className="auth-header">
+          <div className="auth-brand-badge">
+            <BrandLogo size="lg" link={false} />
+          </div>
+          <h1 className="auth-title">Create your account</h1>
+          <p className="auth-subtitle">Join Quebee to manage queues or take tokens</p>
+        </div>
 
         <Alert type="error" message={error} onDismiss={() => setError('')} />
 
         <form onSubmit={handleSubmit} className="auth-form" noValidate>
           <div className="form-group">
-            <label htmlFor="username">Username</label>
+            <label className="form-label" htmlFor="username">Username</label>
             <input
               id="username"
               type="text"
               name="username"
               value={form.username}
               onChange={handleChange}
-              placeholder="johndoe"
+              placeholder="e.g. alexsmith"
               required
               className={`form-input ${getFieldError('username') ? 'input-error' : ''}`}
             />
@@ -75,14 +82,14 @@ export default function RegisterPage() {
           </div>
 
           <div className="form-group">
-            <label htmlFor="email">Email</label>
+            <label className="form-label" htmlFor="email">Email Address</label>
             <input
               id="email"
               type="email"
               name="email"
               value={form.email}
               onChange={handleChange}
-              placeholder="you@example.com"
+              placeholder="alex@example.com"
               required
               className={`form-input ${getFieldError('email') ? 'input-error' : ''}`}
             />
@@ -92,14 +99,14 @@ export default function RegisterPage() {
           </div>
 
           <div className="form-group">
-            <label htmlFor="password">Password</label>
+            <label className="form-label" htmlFor="password">Password</label>
             <input
               id="password"
               type="password"
               name="password"
               value={form.password}
               onChange={handleChange}
-              placeholder="Min. 6 characters"
+              placeholder="At least 6 characters"
               required
               className={`form-input ${getFieldError('password') ? 'input-error' : ''}`}
             />
@@ -109,27 +116,36 @@ export default function RegisterPage() {
           </div>
 
           <div className="form-group">
-            <label htmlFor="role">Register as</label>
+            <label className="form-label" htmlFor="role">Account Role</label>
             <select
               id="role"
               name="role"
               value={form.role}
               onChange={handleChange}
-              className="form-input"
+              className="form-select"
             >
-              <option value="user">Patient / Visitor</option>
-              <option value="staff">Staff (Counter)</option>
+              <option value="user">Customer / Patient / Visitor (Queue Client)</option>
+              <option value="staff">Staff / Service Desk Operator</option>
             </select>
           </div>
 
-          <button type="submit" className="btn btn-primary btn-full" disabled={loading}>
-            {loading ? <Spinner size="sm" /> : 'Create Account'}
-          </button>
+          <div style={{ marginTop: '0.75rem' }}>
+            <Button
+              type="submit"
+              variant="primary"
+              size="lg"
+              fullWidth
+              loading={loading}
+              icon={UserPlus}
+            >
+              Complete Registration
+            </Button>
+          </div>
         </form>
 
         <p className="auth-switch">
-          Already have an account?{' '}
-          <Link to="/login">Sign in</Link>
+          Already registered on Quebee?{' '}
+          <Link to="/login" style={{ fontWeight: 600 }}>Sign in</Link>
         </p>
       </div>
     </div>

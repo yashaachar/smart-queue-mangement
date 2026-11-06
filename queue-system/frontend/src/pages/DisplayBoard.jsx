@@ -1,27 +1,63 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { getQueueStatus } from '../api/queue';
 import Spinner from '../components/Spinner';
+import Alert from '../components/Alert';
+import Badge from '../components/common/Badge';
+import StatCard from '../components/common/StatCard';
+import {
+  Monitor,
+  Users,
+  CheckCircle2,
+  Ticket,
+  Maximize2,
+  Minimize2,
+  Volume2,
+  VolumeX,
+} from 'lucide-react';
 
-const POLL_INTERVAL_MS = 3000; // refresh every 3 seconds
+const POLL_INTERVAL_MS = 3000;
 
 export default function DisplayBoard() {
   const [status, setStatus] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [lastUpdated, setLastUpdated] = useState(null);
+  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [soundEnabled, setSoundEnabled] = useState(false);
+  const [prevServing, setPrevServing] = useState(null);
 
   const fetchStatus = useCallback(async () => {
     try {
       const res = await getQueueStatus();
-      setStatus(res.data.data);
+      const nextData = res.data.data;
+      
+      // Sound chime trigger on token advancement
+      if (soundEnabled && prevServing !== null && nextData.currentServing > prevServing) {
+        try {
+          const ctx = new (window.AudioContext || window.webkitAudioContext)();
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+          osc.connect(gain);
+          gain.connect(ctx.destination);
+          osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
+          osc.frequency.setValueAtTime(880, ctx.currentTime + 0.15); // A5
+          gain.gain.setValueAtTime(0.2, ctx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.6);
+          osc.start();
+          osc.stop(ctx.currentTime + 0.6);
+        } catch (_) {}
+      }
+
+      setPrevServing(nextData.currentServing);
+      setStatus(nextData);
       setLastUpdated(new Date());
       setError('');
     } catch (err) {
-      setError('Unable to reach the server. Retrying...');
+      setError('Connection to Quebee server interrupted. Reconnecting...');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [soundEnabled, prevServing]);
 
   useEffect(() => {
     fetchStatus();
@@ -29,67 +65,118 @@ export default function DisplayBoard() {
     return () => clearInterval(interval);
   }, [fetchStatus]);
 
+  const toggleFullscreen = () => {
+    if (!document.fullscreenElement) {
+      document.documentElement.requestFullscreen().then(() => setIsFullscreen(true)).catch(() => {});
+    } else {
+      document.exitFullscreen().then(() => setIsFullscreen(false)).catch(() => {});
+    }
+  };
+
   if (loading) {
     return (
       <div className="page-center">
-        <Spinner size="lg" label="Loading queue status..." />
+        <Spinner size="lg" label="Loading live display..." />
       </div>
     );
   }
 
   return (
-    <div className="display-board">
-      <div className="board-header">
-        <h1 className="board-title">🏥 Queue Display Board</h1>
-        {lastUpdated && (
-          <span className="board-refresh">
-            Last updated: {lastUpdated.toLocaleTimeString()}
-          </span>
+    <div className={`display-board ${isFullscreen ? 'board-fullscreen' : ''}`}>
+      <div className="board-card">
+        {/* Header */}
+        <div className="board-header">
+          <div className="board-title-group">
+            <h1 className="board-title">
+              <Monitor size={24} color="var(--primary)" aria-hidden="true" />
+              <span>Live Queue Display</span>
+            </h1>
+            <p className="stat-helper">
+              Public Monitor · Main Counter
+              {lastUpdated && ` · Updated ${lastUpdated.toLocaleTimeString()}`}
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+            <button
+              onClick={() => setSoundEnabled(!soundEnabled)}
+              className={`btn btn-sm ${soundEnabled ? 'btn-primary' : 'btn-outline'}`}
+              title={soundEnabled ? 'Chime sound enabled' : 'Enable audio call chime'}
+              aria-label="Toggle sound chime"
+            >
+              {soundEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
+              <span>{soundEnabled ? 'Audio On' : 'Chime Off'}</span>
+            </button>
+
+            <button
+              onClick={toggleFullscreen}
+              className="btn btn-secondary btn-sm"
+              title="Toggle fullscreen monitor mode"
+              aria-label="Fullscreen mode"
+            >
+              {isFullscreen ? <Minimize2 size={15} /> : <Maximize2 size={15} />}
+              <span>{isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}</span>
+            </button>
+          </div>
+        </div>
+
+        <Alert type="error" message={error} onDismiss={() => setError('')} />
+
+        {status && (
+          <>
+            <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '1.5rem' }}>
+              <Badge variant={status.isOpen ? 'success' : 'danger'} dot>
+                {status.isOpen ? 'Counter Active & Calling' : 'Counter Currently Closed'}
+              </Badge>
+            </div>
+
+            {/* Now Serving Big Callout */}
+            <div className="now-serving-section">
+              <p className="now-serving-label">Now Serving</p>
+              <div className="now-serving-number">
+                {status.currentServing > 0 ? (
+                  <span className="token-big">#{status.currentServing}</span>
+                ) : (
+                  <span className="token-big token-empty">—</span>
+                )}
+              </div>
+              <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                {status.currentServing > 0
+                  ? 'Please proceed to Counter 01 when your number is called'
+                  : 'Standing by for next waiting customer'}
+              </p>
+            </div>
+
+            {/* Live Metrics Grid */}
+            <div className="stats-grid">
+              <StatCard
+                label="Waiting in Queue"
+                value={status.waitingCount}
+                icon={Users}
+                helper="Customers ahead"
+              />
+              <StatCard
+                label="Served Today"
+                value={status.servedCount}
+                icon={CheckCircle2}
+                helper="Completed consultations"
+              />
+              <StatCard
+                label="Total Tokens Issued"
+                value={status.lastTokenNumber}
+                icon={Ticket}
+                helper="Session total"
+              />
+            </div>
+
+            {status.waitingCount === 0 && status.currentServing === 0 && (
+              <p style={{ color: 'var(--text-muted)', marginTop: '1.5rem', fontSize: '0.9rem' }}>
+                All queues are clear. Have a great day!
+              </p>
+            )}
+          </>
         )}
       </div>
-
-      {error && <div className="board-error">{error}</div>}
-
-      {status && (
-        <>
-          {/* Status badge */}
-          <div className={`queue-status-badge ${status.isOpen ? 'open' : 'closed'}`}>
-            {status.isOpen ? '🟢 Counter Open' : '🔴 Counter Closed'}
-          </div>
-
-          {/* Now serving — big prominent number */}
-          <div className="now-serving-section">
-            <p className="now-serving-label">NOW SERVING</p>
-            <div className="now-serving-number">
-              {status.currentServing > 0 ? (
-                <span className="token-big">#{status.currentServing}</span>
-              ) : (
-                <span className="token-big token-empty">—</span>
-              )}
-            </div>
-          </div>
-
-          {/* Stats row */}
-          <div className="stats-grid">
-            <div className="stat-card">
-              <span className="stat-value">{status.waitingCount}</span>
-              <span className="stat-label">Waiting</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-value">{status.servedCount}</span>
-              <span className="stat-label">Served Today</span>
-            </div>
-            <div className="stat-card">
-              <span className="stat-value">{status.lastTokenNumber}</span>
-              <span className="stat-label">Tokens Issued</span>
-            </div>
-          </div>
-
-          {status.waitingCount === 0 && status.currentServing === 0 && (
-            <p className="board-empty-msg">No patients in queue right now.</p>
-          )}
-        </>
-      )}
     </div>
   );
 }
