@@ -40,7 +40,7 @@ export default function BrandLogo({ size = 'md', link = true, showTagline = fals
           {/* Hexagonal Token Housing */}
           <path
             d="M16 5L25.5 10.5V21.5L16 27L6.5 21.5V10.5L16 5Z"
-            stroke="#3B82F6"
+            stroke="#ffffff"
             strokeWidth={currentIcon.stroke}
             strokeLinejoin="round"
           />

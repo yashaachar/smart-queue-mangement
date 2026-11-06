@@ -15,7 +15,7 @@
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   --font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
 
-  /* Color Palette: Restrained Slate & Cobalt with Honey-Amber Warmth */
+  /* Color Palette: Deep Midnight Navy (#0c1a47) and Crisp White Theme */
   --bg:           #f8fafc;
   --surface:      #ffffff;
   --surface-alt:  #f1f5f9;
@@ -23,17 +23,22 @@
   
   --border:       #e2e8f0;
   --border-subtle:#edf2f7;
-  --border-focus: #94a3b8;
+  --border-focus: #0c1a47;
 
   --text:         #0f172a;
-  --text-muted:   #64748b;
+  --text-muted:   #475569;
   --text-subtle:  #94a3b8;
 
-  /* Primary Brand: Refined Cobalt */
-  --primary:      #2563eb;
-  --primary-h:    #1d4ed8;
-  --primary-soft: #eff6ff;
-  --primary-border:#bfdbfe;
+  /* Primary Brand: Deep Midnight Navy */
+  --navy:         #0c1a47;
+  --navy-h:       #071133;
+  --navy-soft:    #f0f4fc;
+  --navy-border:  #cbd5e1;
+
+  --primary:      #0c1a47;
+  --primary-h:    #071133;
+  --primary-soft: #f0f4fc;
+  --primary-border:#cbd5e1;
 
   /* Quebee Warm Honey / Amber */
   --amber:        #d97706;
@@ -165,11 +170,11 @@ h1, h2, h3, h4, h5, h6 {
   color: var(--text-muted);
 }
 
-/* ── Modern Navigation Bar ───────────────────────────────────────────────────── */
+/* ── Modern Navigation Bar (Deep Midnight Navy #0c1a47 & White) ───────────────── */
 .navbar {
-  background: var(--surface);
-  border-bottom: 1px solid var(--border);
-  padding: 0.75rem 2rem;
+  background: var(--navy);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0.85rem 2rem;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -177,7 +182,7 @@ h1, h2, h3, h4, h5, h6 {
   position: sticky;
   top: 0;
   z-index: 100;
-  backdrop-filter: blur(8px);
+  box-shadow: 0 4px 16px rgba(12, 26, 71, 0.18);
 }
 
 .navbar-brand-wrap {
@@ -185,7 +190,7 @@ h1, h2, h3, h4, h5, h6 {
   align-items: center;
   gap: 0.6rem;
   text-decoration: none;
-  color: var(--text);
+  color: #ffffff;
 }
 
 .navbar-brand-wrap:hover {
@@ -195,7 +200,8 @@ h1, h2, h3, h4, h5, h6 {
 .brand-icon-box {
   width: 32px;
   height: 32px;
-  background: #0f172a;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.2);
   border-radius: var(--radius-sm);
   display: flex;
   align-items: center;
@@ -207,6 +213,7 @@ h1, h2, h3, h4, h5, h6 {
 
 .navbar-brand-wrap:hover .brand-icon-box {
   transform: scale(1.05);
+  background: rgba(255, 255, 255, 0.18);
 }
 
 .brand-text-wrap {
@@ -218,14 +225,14 @@ h1, h2, h3, h4, h5, h6 {
   font-size: 1.15rem;
   font-weight: 700;
   letter-spacing: -0.03em;
-  color: var(--text);
+  color: #ffffff;
   line-height: 1.1;
 }
 
 .brand-tagline-micro {
   font-size: 0.65rem;
   font-weight: 600;
-  color: var(--amber);
+  color: #93c5fd;
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
@@ -242,7 +249,7 @@ h1, h2, h3, h4, h5, h6 {
   gap: 0.4rem;
   padding: 0.45rem 0.8rem;
   border-radius: var(--radius-sm);
-  color: var(--text-muted);
+  color: #cbd5e1;
   font-size: 0.875rem;
   font-weight: 500;
   text-decoration: none;
@@ -250,14 +257,14 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .nav-link:hover {
-  background: var(--surface-alt);
-  color: var(--text);
+  background: rgba(255, 255, 255, 0.08);
+  color: #ffffff;
   text-decoration: none;
 }
 
 .nav-link.active {
-  background: var(--primary-soft);
-  color: var(--primary);
+  background: rgba(255, 255, 255, 0.15);
+  color: #ffffff;
   font-weight: 600;
 }
 
@@ -272,12 +279,45 @@ h1, h2, h3, h4, h5, h6 {
   align-items: center;
   gap: 0.5rem;
   padding: 0.35rem 0.75rem;
-  background: var(--surface-alt);
-  border: 1px solid var(--border);
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.18);
   border-radius: var(--radius-full);
   font-size: 0.825rem;
   font-weight: 500;
-  color: var(--text);
+  color: #ffffff;
+}
+
+.navbar .btn-ghost {
+  color: #cbd5e1;
+}
+
+.navbar .btn-ghost:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: #ffffff;
+}
+
+.navbar .btn-outline {
+  border-color: rgba(255, 255, 255, 0.35);
+  color: #ffffff;
+}
+
+.navbar .btn-outline:hover {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: #ffffff;
+  color: #ffffff;
+}
+
+.navbar .btn-primary {
+  background: #ffffff;
+  color: var(--navy);
+  border-color: #ffffff;
+  font-weight: 600;
+}
+
+.navbar .btn-primary:hover {
+  background: #f1f5f9;
+  border-color: #f1f5f9;
+  color: var(--navy-h);
 }
 
 /* ── Buttons ─────────────────────────────────────────────────────────────────── */
@@ -1095,7 +1135,7 @@ h1, h2, h3, h4, h5, h6 {
 }
 
 .hero-headline-accent {
-  background: linear-gradient(135deg, var(--primary) 0%, #1e40af 100%);
+  background: linear-gradient(135deg, var(--navy) 0%, #1e3a8a 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }

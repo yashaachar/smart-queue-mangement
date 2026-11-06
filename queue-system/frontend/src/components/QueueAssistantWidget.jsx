@@ -75,7 +75,7 @@ export default function QueueAssistantWidget() {
         <button
           onClick={() => setIsOpen(true)}
           style={{
-            background: '#0f172a',
+            background: '#0c1a47',
             color: '#fff',
             border: 'none',
             borderRadius: '999px',
@@ -118,7 +118,7 @@ export default function QueueAssistantWidget() {
           <div
             style={{
               padding: '1rem 1.25rem',
-              background: '#0f172a',
+              background: '#0c1a47',
               color: '#fff',
               display: 'flex',
               alignItems: 'center',
