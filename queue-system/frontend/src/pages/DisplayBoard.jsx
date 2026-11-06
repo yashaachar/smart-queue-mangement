@@ -29,42 +29,85 @@ export default function DisplayBoard() {
   const [soundEnabled, setSoundEnabled] = useState(false);
   const [isSSEActive, setIsSSEActive] = useState(false);
   const prevServingRef = useRef(null);
+  const audioCtxRef = useRef(null);
 
-  // Play audio chime when token advances
-  const triggerAudioChime = useCallback(() => {
+  // Synthesize clean two-tone waiting room chime (D5 -> A5 ascending bell)
+  const playChimeTone = useCallback((ctx) => {
     try {
-      const AudioCtx = window.AudioContext || window.webkitAudioContext;
-      if (!AudioCtx) return;
-      const ctx = new AudioCtx();
-      const osc = ctx.createOscillator();
-      const gain = ctx.createGain();
-      osc.connect(gain);
-      gain.connect(ctx.destination);
-      osc.frequency.setValueAtTime(587.33, ctx.currentTime); // D5
-      osc.frequency.setValueAtTime(880, ctx.currentTime + 0.15); // A5
-      gain.gain.setValueAtTime(0.2, ctx.currentTime);
-      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.6);
-      osc.start();
-      osc.stop(ctx.currentTime + 0.6);
+      if (!ctx) return;
+      if (ctx.state === 'suspended') {
+        ctx.resume().catch(() => {});
+      }
+      const now = ctx.currentTime;
+
+      // Tone 1: 587.33 Hz (D5)
+      const osc1 = ctx.createOscillator();
+      const gain1 = ctx.createGain();
+      osc1.type = 'sine';
+      osc1.frequency.setValueAtTime(587.33, now);
+      gain1.gain.setValueAtTime(0.3, now);
+      gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+      osc1.connect(gain1);
+      gain1.connect(ctx.destination);
+      osc1.start(now);
+      osc1.stop(now + 0.35);
+
+      // Tone 2: 880 Hz (A5 - harmonic bell)
+      const osc2 = ctx.createOscillator();
+      const gain2 = ctx.createGain();
+      osc2.type = 'sine';
+      osc2.frequency.setValueAtTime(880, now + 0.16);
+      gain2.gain.setValueAtTime(0.001, now);
+      gain2.gain.setValueAtTime(0.35, now + 0.16);
+      gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.7);
+      osc2.connect(gain2);
+      gain2.connect(ctx.destination);
+      osc2.start(now + 0.16);
+      osc2.stop(now + 0.7);
     } catch (_) {}
   }, []);
 
+  // Unlock and toggle audio with browser user gesture requirement satisfied
+  const toggleSound = () => {
+    if (!soundEnabled) {
+      try {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) {
+          if (!audioCtxRef.current) {
+            audioCtxRef.current = new AudioCtx();
+          }
+          if (audioCtxRef.current.state === 'suspended') {
+            audioCtxRef.current.resume();
+          }
+          // Play test sound immediately to confirm speaker works
+          playChimeTone(audioCtxRef.current);
+        }
+      } catch (err) {
+        console.warn('Audio init error:', err);
+      }
+      setSoundEnabled(true);
+    } else {
+      setSoundEnabled(false);
+    }
+  };
+
   const handleIncomingState = useCallback(
     (nextData) => {
-      if (soundEnabled && prevServingRef.current !== null) {
-        const prevCode = prevServingRef.current;
-        const nextCode = nextData.currentServingCode || nextData.currentServing;
-        if (nextCode && nextCode !== prevCode) {
-          triggerAudioChime();
-        }
+      // Trigger chime when a new token is actively being called
+      const isCallingNow = nextData.isCurrentlyServing && (nextData.currentServingCode || nextData.currentServing);
+      const activeCode = nextData.currentServingCode || (nextData.currentServing ? `#${nextData.currentServing}` : null);
+
+      if (soundEnabled && isCallingNow && activeCode && activeCode !== prevServingRef.current) {
+        playChimeTone(audioCtxRef.current);
       }
-      prevServingRef.current = nextData.currentServingCode || nextData.currentServing;
+
+      prevServingRef.current = activeCode;
       setStatus(nextData);
       setLastUpdated(new Date());
       setError('');
       setLoading(false);
     },
-    [soundEnabled, triggerAudioChime]
+    [soundEnabled, playChimeTone]
   );
 
   const fetchStatus = useCallback(async () => {
@@ -147,9 +190,9 @@ export default function DisplayBoard() {
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
             <button
-              onClick={() => setSoundEnabled(!soundEnabled)}
+              onClick={toggleSound}
               className={`btn btn-sm ${soundEnabled ? 'btn-primary' : 'btn-outline'}`}
-              title={soundEnabled ? 'Audio announcement chime active' : 'Turn on audio chime'}
+              title={soundEnabled ? 'Audio announcement chime active (click to mute)' : 'Turn on audio chime (click to test sound)'}
               aria-label="Toggle sound chime"
             >
               {soundEnabled ? <Volume2 size={15} /> : <VolumeX size={15} />}
@@ -187,19 +230,23 @@ export default function DisplayBoard() {
 
             {/* Now Serving Big Callout */}
             <div className="now-serving-section">
-              <p className="now-serving-label">Now Calling / Serving</p>
+              <p className="now-serving-label">
+                {status.isCurrentlyServing ? 'Now Calling / Serving' : 'Standing By'}
+              </p>
               <div className="now-serving-number">
-                {status.currentServingCode ? (
-                  <span className="token-big">{status.currentServingCode}</span>
-                ) : status.currentServing > 0 ? (
-                  <span className="token-big">#{status.currentServing}</span>
+                {status.isCurrentlyServing && (status.currentServingCode || status.currentServing) ? (
+                  <span className="token-big">
+                    {status.currentServingCode || `#${status.currentServing}`}
+                  </span>
                 ) : (
                   <span className="token-big token-empty">—</span>
                 )}
               </div>
               <p style={{ fontSize: '0.95rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
-                {status.currentServingCode || status.currentServing > 0
-                  ? 'Please proceed to your assigned service desk'
+                {status.isCurrentlyServing
+                  ? `Please proceed to ${status.currentServingDesk || 'your assigned service desk'}`
+                  : status.lastServedNumber
+                  ? `All service desks standing by · Last completed: #${status.lastServedNumber}`
                   : 'Standing by for next waiting customer'}
               </p>
             </div>

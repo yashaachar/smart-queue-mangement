@@ -41,18 +41,24 @@ const getQueueStatusPayload = async () => {
   const state = stateResult.rows[0] || { is_open: true, current_serving: 0, last_token_number: 0 };
   const counts = countsResult.rows[0];
 
-  // Find the most recently called or serving token
-  const currentPrimaryServing = activeCountersResult.rows.find(
+  // Find any counter that is actively calling or serving a customer right now
+  const activeServingCounters = activeCountersResult.rows.filter(
     (c) => c.token_number && ['called', 'serving'].includes(c.token_status)
   );
+
+  const currentPrimaryServing = activeServingCounters[0] || null;
 
   // Compute overall system wait estimation
   const systemWaitEstimate = await estimateWaitTime();
 
   return {
     isOpen: state.is_open,
-    currentServing: currentPrimaryServing ? currentPrimaryServing.token_number : state.current_serving,
+    isCurrentlyServing: Boolean(currentPrimaryServing),
+    currentServing: currentPrimaryServing ? currentPrimaryServing.token_number : null,
     currentServingCode: currentPrimaryServing ? currentPrimaryServing.token_code : null,
+    currentServingDesk: currentPrimaryServing ? (currentPrimaryServing.name || `Desk ${currentPrimaryServing.counter_number}`) : null,
+    currentServingStatus: currentPrimaryServing ? currentPrimaryServing.token_status : 'idle',
+    lastServedNumber: state.current_serving || null,
     lastTokenNumber: state.last_token_number,
     waitingCount: parseInt(counts.waiting_count),
     inServiceCount: parseInt(counts.in_service_count),
