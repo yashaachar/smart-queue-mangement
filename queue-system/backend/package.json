@@ -7,6 +7,7 @@
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
     "db:migrate": "node src/config/migrate.js",
+    "db:reset:clean": "node src/scripts/resetFreshDemo.js",
     "test:concurrency": "node tests/concurrencyTest.js"
   },
   "dependencies": {
