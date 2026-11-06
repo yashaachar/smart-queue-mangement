@@ -132,20 +132,63 @@ export default function DisplayBoard() {
 
             {/* Now Serving Big Callout */}
             <div className="now-serving-section">
-              <p className="now-serving-label">Now Serving</p>
+              <p className="now-serving-label">Now Calling / Serving</p>
               <div className="now-serving-number">
-                {status.currentServing > 0 ? (
+                {status.currentServingCode ? (
+                  <span className="token-big">{status.currentServingCode}</span>
+                ) : status.currentServing > 0 ? (
                   <span className="token-big">#{status.currentServing}</span>
                 ) : (
                   <span className="token-big token-empty">—</span>
                 )}
               </div>
-              <p style={{ fontSize: '0.9rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
-                {status.currentServing > 0
-                  ? 'Please proceed to Counter 01 when your number is called'
+              <p style={{ fontSize: '0.95rem', color: 'var(--text-muted)', marginTop: '0.5rem' }}>
+                {status.currentServingCode || status.currentServing > 0
+                  ? 'Please proceed to your assigned counter when called'
                   : 'Standing by for next waiting customer'}
               </p>
             </div>
+
+            {/* Multi-Counter Status Grid */}
+            {status.counters && status.counters.length > 0 && (
+              <div style={{ marginBottom: '2rem' }}>
+                <div style={{ fontSize: '0.8rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.06em', color: 'var(--text-muted)', marginBottom: '0.75rem', textAlign: 'left' }}>
+                  Active Service Desks
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '0.85rem' }}>
+                  {status.counters.map((c) => {
+                    const isBusy = c.token_code || (c.token_number && c.token_status !== 'idle');
+                    return (
+                      <div
+                        key={c.id}
+                        style={{
+                          background: isBusy ? 'var(--surface)' : 'var(--surface-alt)',
+                          border: `1.5px solid ${isBusy ? 'var(--primary-border)' : 'var(--border)'}`,
+                          borderRadius: 'var(--radius)',
+                          padding: '1rem',
+                          textAlign: 'left',
+                        }}
+                      >
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                          <span style={{ fontSize: '0.85rem', fontWeight: 600 }}>{c.name}</span>
+                          <Badge variant={isBusy ? 'primary' : 'neutral'} dot>
+                            {c.status.toUpperCase()}
+                          </Badge>
+                        </div>
+                        <div style={{ fontSize: '1.75rem', fontWeight: 800, color: isBusy ? 'var(--primary)' : 'var(--text-subtle)' }}>
+                          {c.token_code || (c.token_number ? `#${c.token_number}` : 'Standby')}
+                        </div>
+                        {c.service_name && (
+                          <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)', marginTop: '0.2rem' }}>
+                            {c.service_name}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
 
             {/* Live Metrics Grid */}
             <div className="stats-grid">

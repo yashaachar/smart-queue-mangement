@@ -75,3 +75,4 @@ export default function BrandLogo({ size = 'md', link = true, showTagline = fals
 
   return content;
 }
+

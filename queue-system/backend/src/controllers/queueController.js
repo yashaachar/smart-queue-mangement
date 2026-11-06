@@ -3,62 +3,91 @@ const { getRedis } = require('../config/redis');
 const { logActivity, getRequestMeta } = require('../utils/logger');
 
 const REDIS_QUEUE_STATUS_KEY = 'queue:status';
-const CACHE_TTL_SECONDS = 5; // short TTL — queue status changes frequently
+const CACHE_TTL_SECONDS = 3;
 
 /**
  * GET /api/queue/status
- *
- * Returns current queue state: which token is being served, how many are
- * waiting, total issued, etc.
- *
- * Redis caching strategy:
- *   - Cache the full status object for 5 seconds (hot read, called by all
- *     waiting users polling the display board).
- *   - Invalidated immediately whenever the queue advances or resets.
+ * Public queue state: now-serving tokens, active counters, waiting workload per service.
  */
 const getQueueStatus = async (req, res, next) => {
+  let redis = null;
   try {
-    const redis = getRedis();
+    redis = getRedis();
+  } catch (_) {}
 
-    // ── Cache hit ─────────────────────────────────────────────────────────────
-    const cached = await redis.get(REDIS_QUEUE_STATUS_KEY);
-    if (cached) {
-      return res.json({
-        success: true,
-        source: 'cache',
-        data: JSON.parse(cached),
-      });
+  try {
+    // Check Redis cache
+    if (redis) {
+      try {
+        const cached = await redis.get(REDIS_QUEUE_STATUS_KEY);
+        if (cached) {
+          return res.json({ success: true, source: 'cache', data: JSON.parse(cached) });
+        }
+      } catch (_) {}
     }
 
-    // ── Cache miss — query PostgreSQL ─────────────────────────────────────────
-    const [stateResult, countsResult] = await Promise.all([
+    // Cache miss — Query authoritative PostgreSQL
+    const [stateResult, countsResult, activeCountersResult, serviceCountsResult] = await Promise.all([
       pool.query('SELECT * FROM queue_state WHERE id = 1'),
       pool.query(`
         SELECT
-          COUNT(*) FILTER (WHERE status = 'waiting')  AS waiting_count,
-          COUNT(*) FILTER (WHERE status = 'serving')  AS serving_count,
-          COUNT(*) FILTER (WHERE status = 'served')   AS served_count,
-          COUNT(*)                                     AS total_issued
+          COUNT(*) FILTER (WHERE status = 'waiting')                               AS waiting_count,
+          COUNT(*) FILTER (WHERE status IN ('called', 'serving'))                 AS in_service_count,
+          COUNT(*) FILTER (WHERE status IN ('served', 'completed'))               AS served_count,
+          COUNT(*) FILTER (WHERE status = 'cancelled')                            AS cancelled_count,
+          COUNT(*)                                                                 AS total_issued
         FROM tokens
+      `),
+      pool.query(`
+        SELECT c.id, c.counter_number, c.name, c.status,
+               t.token_number, t.token_code, t.status AS token_status,
+               s.name AS service_name
+        FROM counters c
+        LEFT JOIN tokens t ON c.current_token_id = t.id
+        LEFT JOIN services s ON t.service_id = s.id
+        WHERE c.is_active = TRUE
+        ORDER BY c.counter_number ASC
+      `),
+      pool.query(`
+        SELECT s.id, s.name, s.code, s.prefix,
+               COUNT(t.id) FILTER (WHERE t.status = 'waiting') AS waiting_count
+        FROM services s
+        LEFT JOIN tokens t ON s.id = t.service_id
+        WHERE s.is_active = TRUE
+        GROUP BY s.id, s.name, s.code, s.prefix
+        ORDER BY s.id ASC
       `),
     ]);
 
     const state = stateResult.rows[0];
     const counts = countsResult.rows[0];
 
+    // Find the latest called or serving token for primary display board
+    const currentPrimaryServing = activeCountersResult.rows.find(
+      (c) => c.token_number && ['called', 'serving'].includes(c.token_status)
+    );
+
     const payload = {
       isOpen: state.is_open,
-      currentServing: state.current_serving,
+      currentServing: currentPrimaryServing ? currentPrimaryServing.token_number : state.current_serving,
+      currentServingCode: currentPrimaryServing ? currentPrimaryServing.token_code : null,
       lastTokenNumber: state.last_token_number,
       waitingCount: parseInt(counts.waiting_count),
-      servingCount: parseInt(counts.serving_count),
+      inServiceCount: parseInt(counts.in_service_count),
+      servingCount: parseInt(counts.in_service_count), // backwards compatibility
       servedCount: parseInt(counts.served_count),
+      cancelledCount: parseInt(counts.cancelled_count),
       totalIssued: parseInt(counts.total_issued),
+      counters: activeCountersResult.rows,
+      services: serviceCountsResult.rows,
       updatedAt: state.updated_at,
     };
 
-    // Cache for 5 seconds
-    await redis.setex(REDIS_QUEUE_STATUS_KEY, CACHE_TTL_SECONDS, JSON.stringify(payload));
+    if (redis) {
+      try {
+        await redis.setex(REDIS_QUEUE_STATUS_KEY, CACHE_TTL_SECONDS, JSON.stringify(payload));
+      } catch (_) {}
+    }
 
     return res.json({ success: true, source: 'db', data: payload });
   } catch (err) {
@@ -67,55 +96,84 @@ const getQueueStatus = async (req, res, next) => {
 };
 
 /**
- * POST /api/queue/next   (staff only)
- *
- * Advances the queue to the next waiting token.
- * Uses a PostgreSQL transaction to:
- *   1. Mark the currently-serving token as 'served'
- *   2. Find the next 'waiting' token in order
- *   3. Mark it as 'serving' and update queue_state.current_serving
- *   All atomically — no race between two staff members clicking Next.
+ * POST /api/queue/next (Call Next Token)
+ * Staff calls next waiting token to an assigned counter.
+ * Atomically transitions waiting -> called.
+ * Sets called_at = NOW().
  */
 const advanceQueue = async (req, res, next) => {
+  const counterId = parseInt(req.body.counter_id) || 1;
   const client = await pool.connect();
+
   try {
     await client.query('BEGIN');
 
-    // Mark current serving token as 'served'
-    await client.query(`
-      UPDATE tokens
-      SET status = 'served', served_at = NOW()
-      WHERE status = 'serving'
-    `);
+    // Verify counter exists
+    const counterRes = await client.query(
+      'SELECT id, counter_number, name, status, current_token_id FROM counters WHERE id = $1 FOR UPDATE',
+      [counterId]
+    );
 
-    // Find the next waiting token (lowest token_number)
-    const nextResult = await client.query(`
-      SELECT id, token_number
+    if (!counterRes.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ success: false, message: 'Counter not found' });
+    }
+
+    const counter = counterRes.rows[0];
+
+    // If counter had a previously active token, mark it completed to free the counter
+    if (counter.current_token_id) {
+      await client.query(
+        `UPDATE tokens
+         SET status = 'completed', completed_at = NOW(), served_at = NOW()
+         WHERE id = $1 AND status IN ('called', 'serving')`,
+        [counter.current_token_id]
+      );
+    }
+
+    // Select next waiting token using FOR UPDATE SKIP LOCKED
+    // Priority order: highest priority first, then earliest issued_at
+    const nextTokenRes = await client.query(`
+      SELECT id, token_number, token_code, service_id, customer_name
       FROM tokens
       WHERE status = 'waiting'
-      ORDER BY token_number ASC
+      ORDER BY priority DESC, issued_at ASC
       LIMIT 1
       FOR UPDATE SKIP LOCKED
     `);
 
     let nextToken = null;
 
-    if (nextResult.rows.length > 0) {
-      nextToken = nextResult.rows[0];
+    if (nextTokenRes.rows.length > 0) {
+      nextToken = nextTokenRes.rows[0];
 
-      // Mark it as serving
+      // Mark token as called with exact timestamp
       await client.query(
-        `UPDATE tokens SET status = 'serving' WHERE id = $1`,
-        [nextToken.id]
+        `UPDATE tokens 
+         SET status = 'called', counter_id = $1, called_at = NOW() 
+         WHERE id = $2`,
+        [counterId, nextToken.id]
       );
 
-      // Update queue_state
+      // Update counter status
+      await client.query(
+        `UPDATE counters 
+         SET status = 'calling', current_token_id = $1, current_staff_id = $2, updated_at = NOW() 
+         WHERE id = $3`,
+        [nextToken.id, req.user.id, counterId]
+      );
+
+      // Update queue_state primary serving indicator
       await client.query(
         `UPDATE queue_state SET current_serving = $1, updated_at = NOW() WHERE id = 1`,
         [nextToken.token_number]
       );
     } else {
-      // No more waiting tokens — reset current_serving to 0
+      // No more waiting customers
+      await client.query(
+        `UPDATE counters SET status = 'idle', current_token_id = NULL, updated_at = NOW() WHERE id = $1`,
+        [counterId]
+      );
       await client.query(
         `UPDATE queue_state SET current_serving = 0, updated_at = NOW() WHERE id = 1`
       );
@@ -123,21 +181,34 @@ const advanceQueue = async (req, res, next) => {
 
     await client.query('COMMIT');
 
-    // Invalidate cache — queue state has changed
-    await getRedis().del(REDIS_QUEUE_STATUS_KEY);
+    // Invalidate status cache
+    try {
+      const redis = getRedis();
+      await redis.del(REDIS_QUEUE_STATUS_KEY);
+    } catch (_) {}
 
     await logActivity('QUEUE_ADVANCED', {
       performedBy: { userId: req.user.id, username: req.user.username, role: req.user.role },
-      details: { nowServing: nextToken?.token_number || null },
+      details: {
+        counterId,
+        counterNumber: counter.counter_number,
+        nowServing: nextToken?.token_number || null,
+        tokenCode: nextToken?.token_code || null,
+      },
       ...getRequestMeta(req),
     });
 
     return res.json({
       success: true,
       message: nextToken
-        ? `Now serving Token #${nextToken.token_number}`
-        : 'Queue is empty — no more tokens waiting',
-      data: { nowServing: nextToken?.token_number || null },
+        ? `Now calling Token ${nextToken.token_code || '#' + nextToken.token_number} to ${counter.name}`
+        : 'All queues are clear — no customers waiting.',
+      data: {
+        token: nextToken,
+        counterId,
+        nowServing: nextToken?.token_number || null,
+        tokenCode: nextToken?.token_code || null,
+      },
     });
   } catch (err) {
     await client.query('ROLLBACK');
@@ -148,16 +219,227 @@ const advanceQueue = async (req, res, next) => {
 };
 
 /**
- * POST /api/queue/reset   (staff only)
- * Resets the entire queue: clears all tokens and resets counter to 0.
- * Intended for start-of-day / end-of-day use.
+ * POST /api/queue/start-serving
+ * Staff marks customer as seated/service in progress.
+ * Transitions called -> serving.
+ * Sets started_at = NOW() to calculate dispatch delay (started_at - called_at).
+ */
+const startServing = async (req, res, next) => {
+  const counterId = parseInt(req.body.counter_id) || 1;
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const counterRes = await client.query(
+      'SELECT id, name, current_token_id FROM counters WHERE id = $1 FOR UPDATE',
+      [counterId]
+    );
+
+    const counter = counterRes.rows[0];
+    if (!counter || !counter.current_token_id) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, message: 'No customer currently assigned to this counter' });
+    }
+
+    const tokenRes = await client.query(
+      `UPDATE tokens 
+       SET status = 'serving', started_at = NOW() 
+       WHERE id = $1 AND status = 'called'
+       RETURNING id, token_number, token_code, called_at, started_at`,
+      [counter.current_token_id]
+    );
+
+    if (!tokenRes.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, message: 'Token is not in called state' });
+    }
+
+    await client.query(
+      `UPDATE counters SET status = 'serving', updated_at = NOW() WHERE id = $1`,
+      [counterId]
+    );
+
+    await client.query('COMMIT');
+
+    try {
+      const redis = getRedis();
+      await redis.del(REDIS_QUEUE_STATUS_KEY);
+    } catch (_) {}
+
+    return res.json({
+      success: true,
+      message: `Service started for ${tokenRes.rows[0].token_code || '#' + tokenRes.rows[0].token_number}`,
+      data: { token: tokenRes.rows[0] },
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * POST /api/queue/complete
+ * Staff marks service as completed.
+ * Transitions serving -> completed.
+ * Sets completed_at = NOW(), served_at = NOW().
+ * Calculates actual service duration: completed_at - started_at.
+ */
+const completeService = async (req, res, next) => {
+  const counterId = parseInt(req.body.counter_id) || 1;
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const counterRes = await client.query(
+      'SELECT id, name, current_token_id FROM counters WHERE id = $1 FOR UPDATE',
+      [counterId]
+    );
+
+    const counter = counterRes.rows[0];
+    if (!counter || !counter.current_token_id) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, message: 'No customer currently assigned to this counter' });
+    }
+
+    const tokenRes = await client.query(
+      `UPDATE tokens 
+       SET status = 'completed', completed_at = NOW(), served_at = NOW() 
+       WHERE id = $1 AND status IN ('called', 'serving')
+       RETURNING id, token_number, token_code, issued_at, called_at, started_at, completed_at`,
+      [counter.current_token_id]
+    );
+
+    await client.query(
+      `UPDATE counters SET status = 'idle', current_token_id = NULL, updated_at = NOW() WHERE id = $1`,
+      [counterId]
+    );
+
+    await client.query('COMMIT');
+
+    try {
+      const redis = getRedis();
+      await redis.del(REDIS_QUEUE_STATUS_KEY);
+    } catch (_) {}
+
+    await logActivity('TOKEN_SERVED', {
+      performedBy: { userId: req.user.id, username: req.user.username, role: req.user.role },
+      details: {
+        tokenId: tokenRes.rows[0]?.id,
+        tokenCode: tokenRes.rows[0]?.token_code,
+        counterId,
+      },
+      ...getRequestMeta(req),
+    });
+
+    return res.json({
+      success: true,
+      message: `Service completed for ${tokenRes.rows[0]?.token_code || '#' + tokenRes.rows[0]?.token_number}`,
+      data: { token: tokenRes.rows[0] },
+    });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * POST /api/queue/skip
+ * Customer is a no-show or skipped.
+ */
+const skipToken = async (req, res, next) => {
+  const counterId = parseInt(req.body.counter_id) || 1;
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    const counterRes = await client.query(
+      'SELECT id, current_token_id FROM counters WHERE id = $1 FOR UPDATE',
+      [counterId]
+    );
+
+    const counter = counterRes.rows[0];
+    if (!counter || !counter.current_token_id) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ success: false, message: 'No token currently assigned to skip' });
+    }
+
+    await client.query(
+      `UPDATE tokens SET status = 'skipped' WHERE id = $1`,
+      [counter.current_token_id]
+    );
+
+    await client.query(
+      `UPDATE counters SET status = 'idle', current_token_id = NULL, updated_at = NOW() WHERE id = $1`,
+      [counterId]
+    );
+
+    await client.query('COMMIT');
+
+    try {
+      const redis = getRedis();
+      await redis.del(REDIS_QUEUE_STATUS_KEY);
+    } catch (_) {}
+
+    return res.json({ success: true, message: 'Token marked as skipped' });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    next(err);
+  } finally {
+    client.release();
+  }
+};
+
+/**
+ * POST /api/queue/reset (Non-Destructive Session Archiving)
+ * CRITICAL FIX: Closes the current active session and creates a fresh session.
+ * Does NOT run DELETE FROM tokens — all historical service records are preserved for analytics.
  */
 const resetQueue = async (req, res, next) => {
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
 
-    await client.query('DELETE FROM tokens');
+    // 1. Close current active session
+    await client.query(`
+      UPDATE queue_sessions 
+      SET is_active = FALSE, closed_at = NOW() 
+      WHERE is_active = TRUE
+    `);
+
+    // 2. Start new session for Quebee
+    const newSession = await client.query(`
+      INSERT INTO queue_sessions (session_code, session_date, is_active)
+      VALUES (CONCAT('SESS-', TO_CHAR(CURRENT_DATE, 'YYYYMMDD'), '-', SUBSTRING(MD5(RANDOM()::text), 1, 6)), CURRENT_DATE, TRUE)
+      RETURNING id, session_code
+    `);
+
+    // 3. Reset per-service sequence counters
+    await client.query(`
+      UPDATE service_token_sequences 
+      SET last_number = 100, updated_at = NOW()
+    `);
+
+    // 4. Mark remaining waiting tokens from old session as cancelled so queue starts clear
+    await client.query(`
+      UPDATE tokens 
+      SET status = 'cancelled', cancelled_at = NOW(), notes = 'Session concluded/reset by staff'
+      WHERE status IN ('waiting', 'called')
+    `);
+
+    // 5. Reset counters to idle
+    await client.query(`
+      UPDATE counters 
+      SET status = 'idle', current_token_id = NULL, updated_at = NOW()
+    `);
+
+    // 6. Reset legacy queue_state indicators
     await client.query(`
       UPDATE queue_state
       SET last_token_number = 0,
@@ -170,18 +452,25 @@ const resetQueue = async (req, res, next) => {
 
     await client.query('COMMIT');
 
-    // Invalidate all queue-related Redis keys
-    const redis = getRedis();
-    await redis.del(REDIS_QUEUE_STATUS_KEY);
-    await redis.del('queue:last_token_number');
-    await redis.del('queue:current_serving');
+    // Invalidate Redis cache
+    try {
+      const redis = getRedis();
+      await redis.del(REDIS_QUEUE_STATUS_KEY);
+      await redis.del('queue:last_token_number');
+      await redis.del('queue:current_serving');
+    } catch (_) {}
 
     await logActivity('QUEUE_RESET', {
       performedBy: { userId: req.user.id, username: req.user.username, role: req.user.role },
+      details: { newSessionId: newSession.rows[0].id, newSessionCode: newSession.rows[0].session_code },
       ...getRequestMeta(req),
     });
 
-    return res.json({ success: true, message: 'Queue has been reset successfully' });
+    return res.json({
+      success: true,
+      message: 'Queue session closed and archived. Fresh session initialized (Historical data preserved).',
+      data: { session: newSession.rows[0] },
+    });
   } catch (err) {
     await client.query('ROLLBACK');
     next(err);
@@ -191,8 +480,7 @@ const resetQueue = async (req, res, next) => {
 };
 
 /**
- * PATCH /api/queue/toggle   (staff only)
- * Opens or closes the queue counter.
+ * PATCH /api/queue/toggle (Open / Suspend Counter Dispatch)
  */
 const toggleQueue = async (req, res, next) => {
   try {
@@ -202,16 +490,19 @@ const toggleQueue = async (req, res, next) => {
            opened_at = CASE WHEN NOT is_open THEN NOW() ELSE opened_at END,
            updated_at = NOW()
        WHERE id = 1
-       RETURNING is_open`,
+       RETURNING is_open`
     );
 
     const { is_open } = result.rows[0];
 
-    await getRedis().del(REDIS_QUEUE_STATUS_KEY);
+    try {
+      const redis = getRedis();
+      await redis.del(REDIS_QUEUE_STATUS_KEY);
+    } catch (_) {}
 
     return res.json({
       success: true,
-      message: is_open ? 'Queue is now open' : 'Queue is now closed',
+      message: is_open ? 'Queue is now open for token requests' : 'Queue is now suspended',
       data: { isOpen: is_open },
     });
   } catch (err) {
@@ -220,8 +511,7 @@ const toggleQueue = async (req, res, next) => {
 };
 
 /**
- * GET /api/queue/logs   (staff only)
- * Returns recent activity logs from MongoDB (paginated).
+ * GET /api/queue/logs (Activity Logs from MongoDB)
  */
 const getActivityLogs = async (req, res, next) => {
   try {
@@ -251,4 +541,13 @@ const getActivityLogs = async (req, res, next) => {
   }
 };
 
-module.exports = { getQueueStatus, advanceQueue, resetQueue, toggleQueue, getActivityLogs };
+module.exports = {
+  getQueueStatus,
+  advanceQueue,
+  startServing,
+  completeService,
+  skipToken,
+  resetQueue,
+  toggleQueue,
+  getActivityLogs,
+};

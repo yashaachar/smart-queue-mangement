@@ -1,5 +1,5 @@
 const express = require('express');
-const { generateToken, getAllTokens, getMyToken } = require('../controllers/tokenController');
+const { generateToken, getAllTokens, getMyToken, cancelToken } = require('../controllers/tokenController');
 const { authenticate, requireStaff } = require('../middleware/auth');
 const { tokenRateLimiter } = require('../middleware/rateLimiter');
 
@@ -7,21 +7,25 @@ const router = express.Router();
 
 /**
  * POST /api/tokens/generate
- * Any authenticated user can take a token.
- * Rate-limited to prevent burst abuse.
+ * Issue a new token with service routing and concurrency lock.
  */
 router.post('/generate', tokenRateLimiter, authenticate, generateToken);
 
 /**
  * GET /api/tokens/my
- * Returns the calling user's current active token.
+ * Current user's active token.
  */
 router.get('/my', authenticate, getMyToken);
 
 /**
+ * POST /api/tokens/:id/cancel
+ * Cancel a waiting token.
+ */
+router.post('/:id/cancel', authenticate, cancelToken);
+
+/**
  * GET /api/tokens
- * Staff/admin only — paginated list of all tokens.
- * Query params: ?page=1&limit=20&status=waiting
+ * Staff list of all tokens with filters.
  */
 router.get('/', authenticate, requireStaff, getAllTokens);
 
