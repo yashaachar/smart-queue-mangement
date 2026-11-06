@@ -164,6 +164,12 @@ async function runConcurrencyTest() {
       console.log('='.repeat(70));
       exitCode = 1;
     }
+
+    // Clean up test batch tokens so they don't linger as waiting tickets
+    if (tokens.length > 0) {
+      const tokenIds = tokens.map((t) => t.id);
+      await pool.query('UPDATE tokens SET status = $1, cancelled_at = NOW() WHERE id = ANY($2)', ['cancelled', tokenIds]);
+    }
   } catch (err) {
     console.error('[Test Error]:', err);
     exitCode = 1;

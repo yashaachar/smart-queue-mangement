@@ -422,10 +422,18 @@ const cancelToken = async (req, res, next) => {
       });
     }
 
-    await client.query(
-      `UPDATE tokens SET status = 'cancelled', cancelled_at = NOW() WHERE id = $1`,
-      [tokenId]
-    );
+    // Cancel the specific token. If cancelled by customer, cancel all lingering waiting tickets for this user account so their queue state clears completely
+    if (token.user_id && req.user.role === 'user') {
+      await client.query(
+        `UPDATE tokens SET status = 'cancelled', cancelled_at = NOW() WHERE user_id = $1 AND status = 'waiting'`,
+        [token.user_id]
+      );
+    } else {
+      await client.query(
+        `UPDATE tokens SET status = 'cancelled', cancelled_at = NOW() WHERE id = $1`,
+        [tokenId]
+      );
+    }
 
     await client.query('COMMIT');
 
