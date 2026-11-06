@@ -1,6 +1,8 @@
 const { pool } = require('../config/db');
 const { getRedis } = require('../config/redis');
 const { logActivity, getRequestMeta } = require('../utils/logger');
+const { estimateWaitTime } = require('../services/waitEstimationEngine');
+const { notifyQueueUpdate } = require('../services/sseHub');
 
 // Redis key constants
 const REDIS_LAST_TOKEN_KEY = 'queue:last_token_number';
@@ -39,16 +41,26 @@ const generateToken = async (req, res, next) => {
   let lockAcquired = false;
 
   try {
-    // ── Step 1: Redis distributed lock (with graceful fallback if down) ───────
+    // ── Step 1: Redis distributed lock (with spin-wait retry & fallback) ──────
     if (redis) {
       try {
-        const lock = await redis.set(REDIS_LOCK_KEY, lockValue, 'PX', LOCK_TTL_MS, 'NX');
-        lockAcquired = lock === 'OK';
+        const maxWaitMs = 3500;
+        const retryIntervalMs = 35;
+        const startTime = Date.now();
+
+        while (Date.now() - startTime < maxWaitMs) {
+          const lock = await redis.set(REDIS_LOCK_KEY, lockValue, 'PX', LOCK_TTL_MS, 'NX');
+          if (lock === 'OK') {
+            lockAcquired = true;
+            break;
+          }
+          await new Promise((r) => setTimeout(r, retryIntervalMs));
+        }
 
         if (!lockAcquired) {
           return res.status(429).json({
             success: false,
-            message: 'Quebee is busy processing another token request. Please retry in a moment.',
+            message: 'Quebee is busy processing high-volume token requests. Please retry in a moment.',
           });
         }
       } catch (redisErr) {
@@ -151,21 +163,19 @@ const generateToken = async (req, res, next) => {
       // Formatted Token Code (e.g. A-101, B-102)
       const tokenCode = `${service.prefix}-${serviceSeqNumber}`;
 
-      // Calculate initial waiting workload
-      const waitAheadResult = await client.query(
-        `SELECT COUNT(*) AS count_ahead 
-         FROM tokens 
-         WHERE status = 'waiting' AND service_id = $1`,
-        [serviceId]
-      );
-      const countAhead = parseInt(waitAheadResult.rows[0].count_ahead);
-      const estimatedWaitMin = Math.max(2, countAhead * (service.estimated_duration_min || 5));
+      // Extract priority tier as integer (0: regular, 1: priority, 2: urgent)
+      let priorityInt = 0;
+      if (req.body.priority === 'urgent' || req.body.priority === 2) priorityInt = 2;
+      else if (req.body.priority === 'priority' || req.body.priority === 1) priorityInt = 1;
+      else if (typeof req.body.priority === 'number') priorityInt = req.body.priority;
+
+      // Calculate calibrated waiting estimation using engine
+      const waitCalc = await estimateWaitTime({ serviceId, priority: priorityInt });
 
       // 5. Insert new token with precision timestamp issued_at
       const userId = req.user?.id || null;
       const customerName = req.body.customer_name || req.user?.username || 'Guest';
       const customerPhone = req.body.customer_phone || null;
-      const priority = parseInt(req.body.priority) || 0;
       const notes = req.body.notes || null;
 
       const tokenInsertResult = await client.query(
@@ -175,7 +185,8 @@ const generateToken = async (req, res, next) => {
          )
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 'waiting', NOW())
          RETURNING id, token_number, token_code, service_id, session_id,
-                   user_id, customer_name, priority, status, issued_at`,
+                   user_id, customer_name, priority, status, issued_at,
+                   called_at, started_at, completed_at, cancelled_at`,
         [
           nextGlobalTokenNumber,
           tokenCode,
@@ -184,7 +195,7 @@ const generateToken = async (req, res, next) => {
           userId,
           customerName,
           customerPhone,
-          priority,
+          priorityInt,
           notes,
         ]
       );
@@ -192,7 +203,11 @@ const generateToken = async (req, res, next) => {
       newToken = {
         ...tokenInsertResult.rows[0],
         service_name: service.name,
-        estimated_wait_min: estimatedWaitMin,
+        priority_label: priorityInt === 2 ? 'urgent' : priorityInt === 1 ? 'priority' : 'regular',
+        estimated_wait_min: waitCalc.estimatedWaitMin,
+        formatted_range: waitCalc.formattedRange,
+        disclaimer: waitCalc.disclaimer,
+        confidence: waitCalc.confidence,
       };
 
       await client.query('COMMIT');
@@ -203,12 +218,13 @@ const generateToken = async (req, res, next) => {
       client.release();
     }
 
-    // ── Release Redis lock & Invalidate Cache ─────────────────────────────────
+    // ── Release Redis lock, Invalidate Cache & Trigger Real-Time SSE ────────
     if (redis && lockAcquired) {
       await releaseLock(redis, lockValue);
       await redis.del(REDIS_LAST_TOKEN_KEY);
       await redis.del(REDIS_QUEUE_STATUS_KEY);
     }
+    notifyQueueUpdate();
 
     // ── MongoDB Activity Logging ─────────────────────────────────────────────
     await logActivity('TOKEN_ISSUED', {
@@ -341,26 +357,26 @@ const getMyToken = async (req, res, next) => {
 
     const token = result.rows[0];
 
-    // Compute live queue position
-    let positionAhead = 0;
-    if (token.status === 'waiting') {
-      const posRes = await pool.query(
-        `SELECT COUNT(*) AS pos
-         FROM tokens
-         WHERE status = 'waiting'
-           AND (priority > $1 OR (priority = $1 AND issued_at < $2))`,
-        [token.priority, token.issued_at]
-      );
-      positionAhead = parseInt(posRes.rows[0].pos);
-    }
+    // Compute live precision queue estimation using WaitEstimationEngine
+    const waitCalc = await estimateWaitTime({
+      serviceId: token.service_id,
+      tokenId: token.id,
+      priority: token.priority,
+      issuedAt: token.issued_at,
+    });
 
     return res.json({
       success: true,
       data: {
         token: {
           ...token,
-          position_ahead: positionAhead,
-          estimated_wait_min: Math.max(2, positionAhead * (token.estimated_duration_min || 5)),
+          position_ahead: waitCalc.positionAhead,
+          estimated_wait_min: waitCalc.estimatedWaitMin,
+          formatted_range: waitCalc.formattedRange,
+          confidence: waitCalc.confidence,
+          confidence_score: waitCalc.confidenceScore,
+          disclaimer: waitCalc.disclaimer,
+          active_counters: waitCalc.activeCounters,
         },
       },
     });
@@ -417,6 +433,7 @@ const cancelToken = async (req, res, next) => {
       const redis = getRedis();
       await redis.del(REDIS_QUEUE_STATUS_KEY);
     } catch (_) {}
+    notifyQueueUpdate();
 
     await logActivity('TOKEN_CANCELLED', {
       performedBy: { userId: req.user.id, username: req.user.username, role: req.user.role },

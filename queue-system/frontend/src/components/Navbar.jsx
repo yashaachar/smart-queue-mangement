@@ -2,7 +2,7 @@ import React from 'react';
 import { Link, useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import BrandLogo from './common/BrandLogo';
-import { Monitor, Ticket, LayoutDashboard, History, LogOut, LogIn, UserPlus } from 'lucide-react';
+import { Monitor, Ticket, LayoutDashboard, History, BarChart3, LogOut, LogIn, UserPlus } from 'lucide-react';
 
 export default function Navbar() {
   const { user, logout, isStaff } = useAuth();
@@ -41,6 +41,10 @@ export default function Navbar() {
             <Link to="/staff" className={isActive('/staff')}>
               <LayoutDashboard size={15} aria-hidden="true" />
               <span>Staff Terminal</span>
+            </Link>
+            <Link to="/analytics" className={isActive('/analytics')}>
+              <BarChart3 size={15} aria-hidden="true" />
+              <span>Analytics</span>
             </Link>
             <Link to="/staff/logs" className={isActive('/staff/logs')}>
               <History size={15} aria-hidden="true" />

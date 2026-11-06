@@ -9,6 +9,8 @@ const authRoutes = require('./routes/auth');
 const tokenRoutes = require('./routes/tokens');
 const queueRoutes = require('./routes/queue');
 const serviceRoutes = require('./routes/services');
+const analyticsRoutes = require('./routes/analytics');
+const aiRoutes = require('./routes/ai');
 
 const app = express();
 
@@ -36,6 +38,8 @@ app.use('/api/auth', authRoutes);
 app.use('/api/tokens', tokenRoutes);
 app.use('/api/queue', queueRoutes);
 app.use('/api/services', serviceRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/ai', aiRoutes);
 
 // ── 404 handler ───────────────────────────────────────────────────────────────
 app.use((req, res) => {

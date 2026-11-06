@@ -1,13 +1,15 @@
 const { pool } = require('../config/db');
 const { getRedis } = require('../config/redis');
 const { logActivity, getRequestMeta } = require('../utils/logger');
+const { getQueueStatusPayload } = require('../utils/queueStateHelper');
+const { notifyQueueUpdate } = require('../services/sseHub');
 
 const REDIS_QUEUE_STATUS_KEY = 'queue:status';
 const CACHE_TTL_SECONDS = 3;
 
 /**
  * GET /api/queue/status
- * Public queue state: now-serving tokens, active counters, waiting workload per service.
+ * Public queue state: now-serving tokens, active counters, and calibrated wait estimates.
  */
 const getQueueStatus = async (req, res, next) => {
   let redis = null;
@@ -16,7 +18,6 @@ const getQueueStatus = async (req, res, next) => {
   } catch (_) {}
 
   try {
-    // Check Redis cache
     if (redis) {
       try {
         const cached = await redis.get(REDIS_QUEUE_STATUS_KEY);
@@ -26,62 +27,8 @@ const getQueueStatus = async (req, res, next) => {
       } catch (_) {}
     }
 
-    // Cache miss — Query authoritative PostgreSQL
-    const [stateResult, countsResult, activeCountersResult, serviceCountsResult] = await Promise.all([
-      pool.query('SELECT * FROM queue_state WHERE id = 1'),
-      pool.query(`
-        SELECT
-          COUNT(*) FILTER (WHERE status = 'waiting')                               AS waiting_count,
-          COUNT(*) FILTER (WHERE status IN ('called', 'serving'))                 AS in_service_count,
-          COUNT(*) FILTER (WHERE status IN ('served', 'completed'))               AS served_count,
-          COUNT(*) FILTER (WHERE status = 'cancelled')                            AS cancelled_count,
-          COUNT(*)                                                                 AS total_issued
-        FROM tokens
-      `),
-      pool.query(`
-        SELECT c.id, c.counter_number, c.name, c.status,
-               t.token_number, t.token_code, t.status AS token_status,
-               s.name AS service_name
-        FROM counters c
-        LEFT JOIN tokens t ON c.current_token_id = t.id
-        LEFT JOIN services s ON t.service_id = s.id
-        WHERE c.is_active = TRUE
-        ORDER BY c.counter_number ASC
-      `),
-      pool.query(`
-        SELECT s.id, s.name, s.code, s.prefix,
-               COUNT(t.id) FILTER (WHERE t.status = 'waiting') AS waiting_count
-        FROM services s
-        LEFT JOIN tokens t ON s.id = t.service_id
-        WHERE s.is_active = TRUE
-        GROUP BY s.id, s.name, s.code, s.prefix
-        ORDER BY s.id ASC
-      `),
-    ]);
-
-    const state = stateResult.rows[0];
-    const counts = countsResult.rows[0];
-
-    // Find the latest called or serving token for primary display board
-    const currentPrimaryServing = activeCountersResult.rows.find(
-      (c) => c.token_number && ['called', 'serving'].includes(c.token_status)
-    );
-
-    const payload = {
-      isOpen: state.is_open,
-      currentServing: currentPrimaryServing ? currentPrimaryServing.token_number : state.current_serving,
-      currentServingCode: currentPrimaryServing ? currentPrimaryServing.token_code : null,
-      lastTokenNumber: state.last_token_number,
-      waitingCount: parseInt(counts.waiting_count),
-      inServiceCount: parseInt(counts.in_service_count),
-      servingCount: parseInt(counts.in_service_count), // backwards compatibility
-      servedCount: parseInt(counts.served_count),
-      cancelledCount: parseInt(counts.cancelled_count),
-      totalIssued: parseInt(counts.total_issued),
-      counters: activeCountersResult.rows,
-      services: serviceCountsResult.rows,
-      updatedAt: state.updated_at,
-    };
+    // Cache miss — Query authoritative PostgreSQL and calculate wait engine metrics
+    const payload = await getQueueStatusPayload();
 
     if (redis) {
       try {
@@ -132,7 +79,6 @@ const advanceQueue = async (req, res, next) => {
     }
 
     // Select next waiting token using FOR UPDATE SKIP LOCKED
-    // Priority order: highest priority first, then earliest issued_at
     const nextTokenRes = await client.query(`
       SELECT id, token_number, token_code, service_id, customer_name
       FROM tokens
@@ -181,11 +127,12 @@ const advanceQueue = async (req, res, next) => {
 
     await client.query('COMMIT');
 
-    // Invalidate status cache
+    // Invalidate status cache & broadcast real-time SSE
     try {
       const redis = getRedis();
       await redis.del(REDIS_QUEUE_STATUS_KEY);
     } catch (_) {}
+    notifyQueueUpdate();
 
     await logActivity('QUEUE_ADVANCED', {
       performedBy: { userId: req.user.id, username: req.user.username, role: req.user.role },
@@ -221,8 +168,7 @@ const advanceQueue = async (req, res, next) => {
 /**
  * POST /api/queue/start-serving
  * Staff marks customer as seated/service in progress.
- * Transitions called -> serving.
- * Sets started_at = NOW() to calculate dispatch delay (started_at - called_at).
+ * Sets started_at = NOW().
  */
 const startServing = async (req, res, next) => {
   const counterId = parseInt(req.body.counter_id) || 1;
@@ -266,6 +212,7 @@ const startServing = async (req, res, next) => {
       const redis = getRedis();
       await redis.del(REDIS_QUEUE_STATUS_KEY);
     } catch (_) {}
+    notifyQueueUpdate();
 
     return res.json({
       success: true,
@@ -283,9 +230,7 @@ const startServing = async (req, res, next) => {
 /**
  * POST /api/queue/complete
  * Staff marks service as completed.
- * Transitions serving -> completed.
  * Sets completed_at = NOW(), served_at = NOW().
- * Calculates actual service duration: completed_at - started_at.
  */
 const completeService = async (req, res, next) => {
   const counterId = parseInt(req.body.counter_id) || 1;
@@ -324,6 +269,7 @@ const completeService = async (req, res, next) => {
       const redis = getRedis();
       await redis.del(REDIS_QUEUE_STATUS_KEY);
     } catch (_) {}
+    notifyQueueUpdate();
 
     await logActivity('TOKEN_SERVED', {
       performedBy: { userId: req.user.id, username: req.user.username, role: req.user.role },
@@ -386,6 +332,7 @@ const skipToken = async (req, res, next) => {
       const redis = getRedis();
       await redis.del(REDIS_QUEUE_STATUS_KEY);
     } catch (_) {}
+    notifyQueueUpdate();
 
     return res.json({ success: true, message: 'Token marked as skipped' });
   } catch (err) {
@@ -398,8 +345,8 @@ const skipToken = async (req, res, next) => {
 
 /**
  * POST /api/queue/reset (Non-Destructive Session Archiving)
- * CRITICAL FIX: Closes the current active session and creates a fresh session.
- * Does NOT run DELETE FROM tokens — all historical service records are preserved for analytics.
+ * Archives the active session and creates a fresh session.
+ * Preserves all historical records in PostgreSQL for analytics.
  */
 const resetQueue = async (req, res, next) => {
   const client = await pool.connect();
@@ -426,7 +373,7 @@ const resetQueue = async (req, res, next) => {
       SET last_number = 100, updated_at = NOW()
     `);
 
-    // 4. Mark remaining waiting tokens from old session as cancelled so queue starts clear
+    // 4. Mark remaining waiting tokens from old session as cancelled
     await client.query(`
       UPDATE tokens 
       SET status = 'cancelled', cancelled_at = NOW(), notes = 'Session concluded/reset by staff'
@@ -452,13 +399,13 @@ const resetQueue = async (req, res, next) => {
 
     await client.query('COMMIT');
 
-    // Invalidate Redis cache
     try {
       const redis = getRedis();
       await redis.del(REDIS_QUEUE_STATUS_KEY);
       await redis.del('queue:last_token_number');
       await redis.del('queue:current_serving');
     } catch (_) {}
+    notifyQueueUpdate();
 
     await logActivity('QUEUE_RESET', {
       performedBy: { userId: req.user.id, username: req.user.username, role: req.user.role },
@@ -499,6 +446,7 @@ const toggleQueue = async (req, res, next) => {
       const redis = getRedis();
       await redis.del(REDIS_QUEUE_STATUS_KEY);
     } catch (_) {}
+    notifyQueueUpdate();
 
     return res.json({
       success: true,

@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
-import { generateToken, getMyToken, getQueueStatus, getServices, cancelToken } from '../api/queue';
+import { generateToken, getMyToken, getQueueStatus, getServices, cancelToken, subscribeQueueStream } from '../api/queue';
 import { useAuth } from '../context/AuthContext';
 import Alert from '../components/Alert';
 import Spinner from '../components/Spinner';
@@ -64,6 +64,18 @@ export default function TakeTokenPage() {
 
   useEffect(() => {
     fetchData();
+
+    // Setup Real-time SSE stream for instant ticket advancement
+    const unsubscribeSSE = subscribeQueueStream((data) => {
+      setQueueStatus(data);
+      // Refresh my token position when queue updates
+      getMyToken()
+        .then((res) => setMyToken(res.data.data.token))
+        .catch((err) => {
+          if (err.response?.status === 404) setMyToken(null);
+        });
+    });
+
     const interval = setInterval(() => {
       getQueueStatus()
         .then((res) => setQueueStatus(res.data.data))
@@ -73,8 +85,12 @@ export default function TakeTokenPage() {
         .catch((err) => {
           if (err.response?.status === 404) setMyToken(null);
         });
-    }, 4000);
-    return () => clearInterval(interval);
+    }, 6000);
+
+    return () => {
+      unsubscribeSSE();
+      clearInterval(interval);
+    };
   }, [fetchData]);
 
   const handleGenerateToken = async (e) => {
@@ -196,14 +212,21 @@ export default function TakeTokenPage() {
           {myToken.status === 'waiting' && (
             <div className="wait-estimate">
               <Clock size={20} className="wait-estimate-icon" />
-              <div>
-                <div style={{ fontWeight: 600 }}>
-                  {myToken.position_ahead === 0
-                    ? 'You are next in line! Please stay in the reception area.'
-                    : `Estimated wait: ~${myToken.estimated_wait_min || 5} mins (${myToken.position_ahead} customer${myToken.position_ahead > 1 ? 's' : ''} ahead)`}
+              <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.25rem' }}>
+                  <div style={{ fontWeight: 600 }}>
+                    {myToken.position_ahead === 0
+                      ? 'You are next in line! Please stay in the reception area.'
+                      : `Estimated wait: ~${myToken.formatted_range || `${myToken.estimated_wait_min} mins`} (${myToken.position_ahead} customer${myToken.position_ahead > 1 ? 's' : ''} ahead)`}
+                  </div>
+                  {myToken.confidence && (
+                    <Badge variant={myToken.confidence === 'high' ? 'success' : myToken.confidence === 'medium' ? 'primary' : 'neutral'}>
+                      {myToken.confidence.toUpperCase()} CONFIDENCE
+                    </Badge>
+                  )}
                 </div>
                 <div className="wait-disclaimer">
-                  * Estimated waiting time is calculated from current service capacity and workload ahead. Actual duration may vary.
+                  {myToken.disclaimer || '* Estimated waiting time is calculated from current service capacity and workload ahead. Actual duration may vary.'}
                 </div>
               </div>
             </div>

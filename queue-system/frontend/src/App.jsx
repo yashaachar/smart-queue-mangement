@@ -9,6 +9,8 @@ import DisplayBoard from './pages/DisplayBoard';
 import TakeTokenPage from './pages/TakeTokenPage';
 import StaffDashboard from './pages/StaffDashboard';
 import ActivityLogsPage from './pages/ActivityLogsPage';
+import AnalyticsPage from './pages/AnalyticsPage';
+import QueueAssistantWidget from './components/QueueAssistantWidget';
 import NotFoundPage from './pages/NotFoundPage';
 import Spinner from './components/Spinner';
 
@@ -79,9 +81,18 @@ const AppContent = () => {
               </StaffRoute>
             }
           />
+          <Route
+            path="/analytics"
+            element={
+              <StaffRoute>
+                <AnalyticsPage />
+              </StaffRoute>
+            }
+          />
           <Route path="*" element={<NotFoundPage />} />
         </Routes>
       </main>
+      <QueueAssistantWidget />
     </>
   );
 };

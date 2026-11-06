@@ -9,9 +9,16 @@ const {
   toggleQueue,
   getActivityLogs,
 } = require('../controllers/queueController');
+const { handleSSEConnection } = require('../services/sseHub');
 const { authenticate, requireStaff } = require('../middleware/auth');
 
 const router = express.Router();
+
+/**
+ * GET /api/queue/stream
+ * Public Server-Sent Events (SSE) real-time push stream.
+ */
+router.get('/stream', handleSSEConnection);
 
 /**
  * GET /api/queue/status

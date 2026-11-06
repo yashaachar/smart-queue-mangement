@@ -10,6 +10,7 @@ import {
   getAllTokens,
   getCounters,
   getServices,
+  subscribeQueueStream,
 } from '../api/queue';
 import Alert from '../components/Alert';
 import Spinner from '../components/Spinner';
@@ -76,6 +77,13 @@ export default function StaffDashboard() {
 
   useEffect(() => {
     fetchAll();
+
+    // Setup real-time SSE stream for instant counter and queue synchronization
+    const unsubscribeSSE = subscribeQueueStream((data) => {
+      setQueueStatus(data);
+      getCounters().then((res) => setCounters(res.data.data.counters)).catch(() => {});
+    });
+
     const interval = setInterval(() => {
       getQueueStatus()
         .then((res) => setQueueStatus(res.data.data))
@@ -83,8 +91,12 @@ export default function StaffDashboard() {
       getCounters()
         .then((res) => setCounters(res.data.data.counters))
         .catch(() => {});
-    }, 3500);
-    return () => clearInterval(interval);
+    }, 6000);
+
+    return () => {
+      unsubscribeSSE();
+      clearInterval(interval);
+    };
   }, [fetchAll]);
 
   // Find currently operated counter
